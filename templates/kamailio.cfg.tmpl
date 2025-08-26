@@ -1,0 +1,82 @@
+#!KAMAILIO
+#### Global ####
+debug=2
+log_stderror=no
+fork=yes
+children=8
+mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
+
+# Listen / Advertise
+listen=udp:__LISTEN_ADDR__:__LISTEN_PORT__
+__ADVERTISE_LINE__
+
+#### Core modules ####
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "tmx.so"
+loadmodule "rr.so"
+loadmodule "sanity.so"
+loadmodule "maxfwd.so"
+loadmodule "pv.so"
+loadmodule "textops.so"
+loadmodule "siputils.so"
+loadmodule "xlog.so"
+
+# For CIDR checks in the allowlist
+loadmodule "ipops.so"
+
+# File-based prefix/number map
+loadmodule "mtree.so"
+modparam("mtree", "mtree", "dest:/etc/kamailio/dest.map")
+
+# FIFO MI so 'kamctl fifo' works (optional hot-reload)
+loadmodule "mi_fifo.so"
+modparam("mi_fifo","fifo_name","/var/run/kamailio/kamailio_fifo")
+
+#### Routing ####
+request_route {
+    if (!sanity_check("1777","7")) exit;
+    if (!mf_process_maxfwd_header("10")) { sl_send_reply("483","Too Many Hops"); exit; }
+
+    # Liveness
+    if (is_method("OPTIONS") && uri==myself) { sl_send_reply("200","OK"); exit; }
+
+    if (is_method("INVITE")) {
+        # Carrier allowlist (auto-generated during install)
+        if (!( __CARRIER_EXPR__ )) {
+            xlog("L_WARN","Blocked INVITE from $si\n");
+            sl_send_reply("403","Forbidden");
+            exit;
+        }
+
+        if ($rU == $null || $rU == "") { sl_send_reply("484","Address Incomplete"); exit; }
+
+        # Normalize called number similar to exported map
+        if ($rU =~ "^\+") $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
+        else              $var(dst) = $(rU{s.gsub,([^0-9]),,g});
+
+        # Lookup → f1 | f2
+        $var(target) = mt_match("dest", "$var(dst)");
+        if ($var(target) == $null || $var(target) == "") {
+            xlog("L_NOTICE","No mtree match for $var(dst)\n");
+            sl_send_reply("404","No route");
+            exit;
+        }
+
+        if ($var(target) == "f1") {
+            $du = "sip:__F1_HOST__:5060;transport=udp";
+        } else if ($var(target) == "f2") {
+            $du = "sip:__F2_HOST__:5060;transport=udp";
+        } else {
+            xlog("L_ERR","Unknown mtree target '$var(target)'\n");
+            sl_send_reply("500","Server Misconfig");
+            exit;
+        }
+
+        record_route();
+        if (!t_relay()) sl_reply_error();
+        exit;
+    }
+
+    sl_send_reply("405","Method Not Allowed"); exit;
+}

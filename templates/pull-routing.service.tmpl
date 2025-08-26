@@ -1,0 +1,7 @@
+[Unit]
+Description=Export SIP routing from Postgres to Kamailio mtree
+
+[Service]
+Type=oneshot
+Environment=PGURL=__PGURL__
+ExecStart=/usr/local/sbin/pull-routing.sh

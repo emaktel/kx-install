@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SIP routing export periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=__PULL_INTERVAL__
+RandomizedDelaySec=20s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
