@@ -8,8 +8,7 @@ Debian 13 one-click install:
 
 ## Quick start
 ```
-git clone <your-repo-url> kamailio-edge
-cd kamailio-edge
+sudo apt update && sudo apt install git -y && cd ~ && git clone https://github.com/emaktel/kx-install.git kamailio-edge
 cp .env.example .env
 ```
 Next, edit .env with your hosts, carriers, PGURL, etc.
