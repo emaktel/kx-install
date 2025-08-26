@@ -28,15 +28,17 @@ Kamailio mtree matches by longest prefix and sets $du to f1/f2
 The exporter runs on a systemd timer (default every 2 minutes) and attempts a hot-reload; if RPC isn’t available it restarts Kamailio as a fallback.
 
 ### Required Postgres shape
+```
 public.v_domains has domain_uuid uuid and server_affinity text CHECK ('f1'|'f2')
-
 public.v_destinations has domain_uuid and destination_number (enabled rows used)
+```
 
 #### Uninstall
 ```
 sudo ./scripts/uninstall.sh
-This keeps the kamailio package installed but removes the systemd units and restores your previous /etc/kamailio/kamailio.cfg if a backup existed.
 ```
+This keeps the kamailio package installed but removes the systemd units and restores your previous /etc/kamailio/kamailio.cfg if a backup existed.
+
 
 ### How to use
 
