@@ -20,7 +20,7 @@ journalctl -u kamailio -e -n 100
 journalctl -u pull-routing.service -e -n 50
 ```
 
-###How it works
+### How it works
 bin/pull-routing.sh exports rows as <number> <f1|f2> into /etc/kamailio/dest.map
 
 Kamailio mtree matches by longest prefix and sets $du to f1/f2
