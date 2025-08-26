@@ -7,12 +7,15 @@ Debian 13 one-click install:
 - A helper pulls routing from **Postgres** (join of `v_destinations` × `v_domains.server_affinity`) and hot-reloads the map
 
 ## Quick start
-
+```
 git clone <your-repo-url> kamailio-edge
 cd kamailio-edge
 cp .env.example .env
+```
 # edit .env with your hosts, carriers, PGURL, etc.
+```
 sudo ./scripts/install.sh
+```
 
 ### Check logs:
 ```
@@ -33,7 +36,7 @@ public.v_domains has domain_uuid uuid and server_affinity text CHECK ('f1'|'f2')
 public.v_destinations has domain_uuid and destination_number (enabled rows used)
 ```
 
-#### Uninstall
+### Uninstall
 ```
 sudo ./scripts/uninstall.sh
 ```
