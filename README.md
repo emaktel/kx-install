@@ -14,14 +14,14 @@ cp .env.example .env
 # edit .env with your hosts, carriers, PGURL, etc.
 sudo ./scripts/install.sh
 
-Check logs:
-
+### Check logs:
 ```
 journalctl -u kamailio -e -n 100
 journalctl -u pull-routing.service -e -n 50
-How it works
-bin/pull-routing.sh exports rows as <number> <f1|f2> into /etc/kamailio/dest.map
 ```
+
+###How it works
+bin/pull-routing.sh exports rows as <number> <f1|f2> into /etc/kamailio/dest.map
 
 Kamailio mtree matches by longest prefix and sets $du to f1/f2
 
