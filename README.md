@@ -12,7 +12,9 @@ git clone <your-repo-url> kamailio-edge
 cd kamailio-edge
 cp .env.example .env
 ```
-# edit .env with your hosts, carriers, PGURL, etc.
+Next, edit .env with your hosts, carriers, PGURL, etc.
+
+Finally:
 ```
 sudo ./scripts/install.sh
 ```
