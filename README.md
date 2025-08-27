@@ -10,7 +10,7 @@
 ```bash
 sudo apt update && sudo apt install git -y && cd ~ && git clone https://github.com/emaktel/kx-install.git kamailio-edge
 cp .env.example .env
-# edit .env (F1_HOST/F2_HOST, CARRIER_SOURCES, POSTGREST_* values)
+nano .env
 chmod +x scripts/install.sh && ./scripts/install.sh
 ```
 
