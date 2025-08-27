@@ -1,7 +1,4 @@
-# keep secrets out of git
 .env
-
-# macOS / editors
 .DS_Store
 .idea/
 .vscode/

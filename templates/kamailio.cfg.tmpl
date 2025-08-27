@@ -6,11 +6,10 @@ fork=yes
 children=8
 mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
 
-# Listen / Advertise
 listen=udp:__LISTEN_ADDR__:__LISTEN_PORT__
 __ADVERTISE_LINE__
 
-#### Core modules ####
+#### Modules ####
 loadmodule "sl.so"
 loadmodule "tm.so"
 loadmodule "tmx.so"
@@ -22,14 +21,14 @@ loadmodule "textops.so"
 loadmodule "siputils.so"
 loadmodule "xlog.so"
 
-# For CIDR checks in the allowlist
+# CIDR checks for carrier allowlist
 loadmodule "ipops.so"
 
-# File-based prefix/number map
+# mtree for DB-less number/prefix routing
 loadmodule "mtree.so"
 modparam("mtree", "mtree", "dest:/etc/kamailio/dest.map")
 
-# FIFO MI so 'kamctl fifo' works (optional hot-reload)
+# FIFO MI so `kamctl fifo` works (for hot-reload)
 loadmodule "mi_fifo.so"
 modparam("mi_fifo","fifo_name","/var/run/kamailio/kamailio_fifo")
 
@@ -38,11 +37,10 @@ request_route {
     if (!sanity_check("1777","7")) exit;
     if (!mf_process_maxfwd_header("10")) { sl_send_reply("483","Too Many Hops"); exit; }
 
-    # Liveness
     if (is_method("OPTIONS") && uri==myself) { sl_send_reply("200","OK"); exit; }
 
     if (is_method("INVITE")) {
-        # Carrier allowlist (auto-generated during install)
+        # Carrier allowlist (auto-rendered at install from .env)
         if (!( __CARRIER_EXPR__ )) {
             xlog("L_WARN","Blocked INVITE from $si\n");
             sl_send_reply("403","Forbidden");
@@ -51,11 +49,11 @@ request_route {
 
         if ($rU == $null || $rU == "") { sl_send_reply("484","Address Incomplete"); exit; }
 
-        # Normalize called number similar to exported map
+        # Normalize to match export (keep leading + if present)
         if ($rU =~ "^\+") $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
         else              $var(dst) = $(rU{s.gsub,([^0-9]),,g});
 
-        # Lookup → f1 | f2
+        # Look up → "f1" | "f2"
         $var(target) = mt_match("dest", "$var(dst)");
         if ($var(target) == $null || $var(target) == "") {
             xlog("L_NOTICE","No mtree match for $var(dst)\n");

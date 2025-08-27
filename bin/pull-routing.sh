@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PGURL:?PGURL env is required (postgres://user:pass@host:port/db)}"
+: "${POSTGREST_RO_DB_URL:?POSTGREST_RO_DB_URL required}"
+: "${POSTGREST_KEY:?POSTGREST_KEY required}"
+: "${POSTGREST_EXPORT_PATH:?POSTGREST_EXPORT_PATH required}"
+
 DEST_MAP="/etc/kamailio/dest.map"
 MTREE_NAME="dest"
 
-tmp="$(mktemp)"
-# v_destinations (enabled) × v_domains(server_affinity) → "<number> <f1|f2>"
-psql "$PGURL" -Atc "
-SELECT
-  CASE
-    WHEN vd.destination_number LIKE '+%' THEN regexp_replace(vd.destination_number, '[^+0-9]', '', 'g')
-    ELSE regexp_replace(vd.destination_number, '\D', '', 'g')
-  END
-  || ' ' ||
-  vdms.server_affinity
-FROM public.v_destinations vd
-JOIN public.v_domains vdms USING (domain_uuid)
-WHERE vd.destination_enabled = 'true'
-  AND vd.destination_number IS NOT NULL
-  AND vd.destination_number <> ''
-ORDER BY 1;
-" > "$tmp"
+# Build auth header
+AUTH_HEADER="${POSTGREST_AUTH_HEADER:-apikey}"
+AUTH_SCHEME="${POSTGREST_AUTH_SCHEME:-}"
+if [ -n "$AUTH_SCHEME" ]; then
+  HDR="$AUTH_HEADER: $AUTH_SCHEME $POSTGREST_KEY"
+else
+  HDR="$AUTH_HEADER: $POSTGREST_KEY"
+fi
 
-# sanity
+URL="${POSTGREST_RO_DB_URL%/}${POSTGREST_EXPORT_PATH}"
+
+tmp="$(mktemp)"
+
+# Call PostgREST:
+# Expect JSON array: [{"num":"<number>","target":"f1|f2"}, ...]
+# Default uses POST on an RPC (works reliably). For a view endpoint, switch to GET.
+curl -sS -X POST "$URL" \
+  -H "Content-Type: application/json" \
+  -H "$HDR" \
+  --data '{}' \
+| jq -r '.[] | select(.num and .target) | "\(.num) \(.target)"' > "$tmp"
+
+# Sanity: must output lines ending with f1/f2
 if ! grep -Eq ' (f1|f2)$' "$tmp"; then
-  echo "ERROR: export produced no f1/f2 rows" >&2
+  echo "ERROR: export produced no f1/f2 rows from $URL" >&2
   rm -f "$tmp"
   exit 1
 fi
@@ -33,10 +40,8 @@ fi
 install -o root -g root -m 0644 "$tmp" "$DEST_MAP"
 rm -f "$tmp"
 
-# Try hot-reload; fallback to restart if MI not available
-if command -v kamcmd >/dev/null 2>&1; then
-  kamcmd mtree.reload "$MTREE_NAME" || true
-elif command -v kamctl >/dev/null 2>&1; then
+# Hot-reload mtree: prefer kamctl+FIFO (mi_fifo loaded)
+if command -v kamctl >/dev/null 2>&1; then
   kamctl fifo "mtree.reload $MTREE_NAME" || true
 else
   systemctl restart kamailio || true
