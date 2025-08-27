@@ -1,11 +1,9 @@
 [Unit]
-Description=Export SIP routing from PostgREST to Kamailio mtree
+Description=Export SIP routing from PostgREST view to Kamailio mtree
 
 [Service]
 Type=oneshot
 Environment=POSTGREST_RO_DB_URL=__POSTGREST_RO_DB_URL__
 Environment=POSTGREST_KEY=__POSTGREST_KEY__
-Environment=POSTGREST_AUTH_HEADER=__POSTGREST_AUTH_HEADER__
-Environment=POSTGREST_AUTH_SCHEME=__POSTGREST_AUTH_SCHEME__
 Environment=POSTGREST_EXPORT_PATH=__POSTGREST_EXPORT_PATH__
 ExecStart=/usr/local/sbin/pull-routing.sh

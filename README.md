@@ -24,44 +24,41 @@ head /etc/kamailio/dest.map
 
 ## PostgREST endpoint
 
-Create an **RPC** that joins `v_destinations` to `v_domains.server_affinity`:
+**Auth**: `Authorization: Bearer ${POSTGREST_KEY}`
 
-```sql
-create or replace function public.edge_export_routing()
-returns table(num text, target text)
-language sql
-stable
-as $$
-  select
-    case
-      when vd.destination_number like '+%' then regexp_replace(vd.destination_number,'[^+0-9]','','g')
-      else regexp_replace(vd.destination_number,'\\D','','g')
-    end as num,
-    vdms.server_affinity::text as target
-  from public.v_destinations vd
-  join public.v_domains vdms using (domain_uuid)
-  where vd.destination_enabled = 'true'
-    and vd.destination_number is not null
-    and vd.destination_number <> ''
-$$;
-```
-
-After deploying the function, the helper posts to:
+Default expects a **VIEW** as follows:
 
 ```
-POST {POSTGREST_RO_DB_URL}/rpc/edge_export_routing
-Headers:
-  {POSTGREST_AUTH_HEADER}: [optional {POSTGREST_AUTH_SCHEME}] {POSTGREST_KEY}
-Body: {}
+CREATE OR REPLACE VIEW public.edge_export_routing_view AS
+SELECT DISTINCT
+  ('+' ||
+     regexp_replace(vd.destination_prefix, '\D', '', 'g') ||
+     regexp_replace(vd.destination_number,  '\D', '', 'g')
+  )::text                         AS num,
+  vdms.server_affinity::text      AS target
+FROM public.v_destinations vd
+JOIN public.v_domains vdms
+  ON vd.domain_uuid = vdms.domain_uuid
+WHERE vdms.domain_enabled IS TRUE
+  AND lower(coalesce(vd.destination_enabled, '')) = 'true'
+  AND vd.destination_type = 'inbound'
+  AND vd.destination_prefix IS NOT NULL AND vd.destination_prefix <> ''
+  AND vd.destination_number  IS NOT NULL AND vd.destination_number  <> ''
+  AND vdms.server_affinity IN ('f1','f2')
+ORDER BY num;
 ```
 
-The function must return JSON like:
+Returning:
 
-```json
-[{"num":"+15145550001","target":"f1"}, {"num":"+15146660002","target":"f2"}]
 ```
-
-Prefer an RPC for reliability. If you expose a view instead, set `POSTGREST_EXPORT_PATH` to `/edge_export_routing_view` and the helper will still work (change the method in `bin/pull-routing.sh` to `GET` if needed).
+[
+    {
+    "num": "<E164 or normalized>",
+    "target": "f1|f2" },
+    ...
+    }
+]
+'''
 
 ## Change routing
 

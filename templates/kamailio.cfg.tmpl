@@ -49,9 +49,8 @@ request_route {
 
         if ($rU == $null || $rU == "") { sl_send_reply("484","Address Incomplete"); exit; }
 
-        # Normalize to match export (keep leading + if present)
-        if ($rU =~ "^\+") $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
-        else              $var(dst) = $(rU{s.gsub,([^0-9]),,g});
+        # Expect E.164 (+CC + local). Keep '+' and digits only.
+        $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
 
         # Look up → "f1" | "f2"
         $var(target) = mt_match("dest", "$var(dst)");

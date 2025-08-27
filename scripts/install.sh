@@ -21,9 +21,7 @@ PULL_INTERVAL="${PULL_INTERVAL:-2m}"
 [ -n "${CARRIER_SOURCES:-}" ] || die "CARRIER_SOURCES not set"
 [ -n "${POSTGREST_RO_DB_URL:-}" ] || die "POSTGREST_RO_DB_URL not set"
 [ -n "${POSTGREST_KEY:-}" ] || die "POSTGREST_KEY not set"
-POSTGREST_EXPORT_PATH="${POSTGREST_EXPORT_PATH:-/rpc/edge_export_routing}"
-POSTGREST_AUTH_HEADER="${POSTGREST_AUTH_HEADER:-apikey}"
-POSTGREST_AUTH_SCHEME="${POSTGREST_AUTH_SCHEME:-}"
+[ -n "${POSTGREST_EXPORT_PATH:-}" ] || die "POSTGREST_EXPORT_PATH not set"
 
 echo "==> Installing packages"
 apt-get update -y
@@ -87,8 +85,6 @@ tmr_tmp="$(mktemp)"
 
 sed -e "s#__POSTGREST_RO_DB_URL__#${POSTGREST_RO_DB_URL//\//\\/}#g" \
     -e "s#__POSTGREST_KEY__#${POSTGREST_KEY//\//\\/}#g" \
-    -e "s#__POSTGREST_AUTH_HEADER__#${POSTGREST_AUTH_HEADER//\//\\/}#g" \
-    -e "s#__POSTGREST_AUTH_SCHEME__#${POSTGREST_AUTH_SCHEME//\//\\/}#g" \
     -e "s#__POSTGREST_EXPORT_PATH__#${POSTGREST_EXPORT_PATH//\//\\/}#g" \
     "$ROOT_DIR/templates/pull-routing.service.tmpl" > "$svc_tmp"
 
