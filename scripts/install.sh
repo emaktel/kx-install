@@ -4,6 +4,12 @@ set -euo pipefail
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "Missing dependency: $1"; }
 
+# escape values for use in sed replacement with '#' delimiter
+sed_escape() {
+  # escape: backslash, ampersand, slash, and our delimiter '#'
+  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g' -e 's/#/\\#/g' -e 's/\\/\\\\/g'
+}
+
 [ "$EUID" -eq 0 ] || die "Run as root (sudo)."
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,7 +44,7 @@ echo "==> Render kamailio.cfg"
 CFG_TMPL="$ROOT_DIR/templates/kamailio.cfg.tmpl"
 CFG_OUT="/etc/kamailio/kamailio.cfg"
 
-# Build carrier allow expression
+# Build carrier allow expression ($si is already escaped with backslashes below)
 CARRIER_EXPR=""
 IFS=',' read -ra SRC_ARR <<< "$CARRIER_SOURCES"
 for raw in "${SRC_ARR[@]}"; do
@@ -53,19 +59,28 @@ for raw in "${SRC_ARR[@]}"; do
 done
 [ -n "$CARRIER_EXPR" ] || die "CARRIER_SOURCES produced empty expression"
 
+# Only inject an advertise line if provided; otherwise inject BLANK (no '# ...' comment!)
 if [ -n "$ADVERTISE_ADDR" ]; then
   ADVERTISE_LINE="advertise \"$ADVERTISE_ADDR\":$LISTEN_PORT"
 else
-  ADVERTISE_LINE="# advertise not set"
+  ADVERTISE_LINE=""
 fi
 
+# Escape everything for sed replacement
+ESC_LISTEN_ADDR="$(sed_escape "$LISTEN_ADDR")"
+ESC_LISTEN_PORT="$(sed_escape "$LISTEN_PORT")"
+ESC_ADVERTISE_LINE="$(sed_escape "$ADVERTISE_LINE")"
+ESC_CARRIER_EXPR="$(sed_escape "$CARRIER_EXPR")"
+ESC_F1_HOST="$(sed_escape "$F1_HOST")"
+ESC_F2_HOST="$(sed_escape "$F2_HOST")"
+
 tmpcfg="$(mktemp)"
-sed -e "s#__LISTEN_ADDR__#$LISTEN_ADDR#g" \
-    -e "s#__LISTEN_PORT__#$LISTEN_PORT#g" \
-    -e "s#__ADVERTISE_LINE__#$ADVERTISE_LINE#g" \
-    -e "s#__CARRIER_EXPR__#$CARRIER_EXPR#g" \
-    -e "s#__F1_HOST__#$F1_HOST#g" \
-    -e "s#__F2_HOST__#$F2_HOST#g" \
+sed -e "s#__LISTEN_ADDR__#${ESC_LISTEN_ADDR}#g" \
+    -e "s#__LISTEN_PORT__#${ESC_LISTEN_PORT}#g" \
+    -e "s#__ADVERTISE_LINE__#${ESC_ADVERTISE_LINE}#g" \
+    -e "s#__CARRIER_EXPR__#${ESC_CARRIER_EXPR}#g" \
+    -e "s#__F1_HOST__#${ESC_F1_HOST}#g" \
+    -e "s#__F2_HOST__#${ESC_F2_HOST}#g" \
     "$CFG_TMPL" > "$tmpcfg"
 install -o root -g root -m 0644 "$tmpcfg" "$CFG_OUT"
 rm -f "$tmpcfg"
