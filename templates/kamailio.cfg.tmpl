@@ -6,10 +6,12 @@ fork=yes
 children=8
 mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
 
+# Listen / Advertise
 listen=udp:__LISTEN_ADDR__:__LISTEN_PORT__
 __ADVERTISE_LINE__
 
 #### Modules ####
+# Core routing helpers
 loadmodule "sl.so"
 loadmodule "tm.so"
 loadmodule "tmx.so"
@@ -21,26 +23,27 @@ loadmodule "textops.so"
 loadmodule "siputils.so"
 loadmodule "xlog.so"
 
-# CIDR checks for carrier allowlist
+# Carrier IP/CIDR checks
 loadmodule "ipops.so"
 
-# mtree for DB-less number/prefix routing
-loadmodule "mtree.so"
-modparam("mtree", "mtree", "dest:/etc/kamailio/dest.map")
+# JSON-RPC server so `kamcmd` can manage mtree (FIFO transport)
+loadmodule "jsonrpcs.so"
+modparam("jsonrpcs", "fifo_name", "/run/kamailio/kamailio_rpc.fifo")
 
-# FIFO MI so `kamctl fifo` works (for hot-reload)
-loadmodule "mi_fifo.so"
-modparam("mi_fifo","fifo_name","/var/run/kamailio/kamailio_fifo")
+# Longest-prefix map kept in memory; populated via `kamcmd mtree.add`
+loadmodule "mtree.so"
+modparam("mtree", "mtree", "name=dest")
 
 #### Routing ####
 request_route {
     if (!sanity_check("1777","7")) exit;
     if (!mf_process_maxfwd_header("10")) { sl_send_reply("483","Too Many Hops"); exit; }
 
+    # Liveness
     if (is_method("OPTIONS") && uri==myself) { sl_send_reply("200","OK"); exit; }
 
     if (is_method("INVITE")) {
-        # Carrier allowlist (auto-rendered at install from .env)
+        # Carrier allowlist (rendered from .env at install)
         if (!( __CARRIER_EXPR__ )) {
             xlog("L_WARN","Blocked INVITE from $si\n");
             sl_send_reply("403","Forbidden");
@@ -49,10 +52,10 @@ request_route {
 
         if ($rU == $null || $rU == "") { sl_send_reply("484","Address Incomplete"); exit; }
 
-        # Expect E.164 (+CC + local). Keep '+' and digits only.
+        # Expect E.164; keep '+' and digits only
         $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
 
-        # Look up → "f1" | "f2"
+        # Lookup → "f1" | "f2" from mtree 'dest'
         $var(target) = mt_match("dest", "$var(dst)");
         if ($var(target) == $null || $var(target) == "") {
             xlog("L_NOTICE","No mtree match for $var(dst)\n");

@@ -1,46 +1,68 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${POSTGREST_RO_DB_URL:?POSTGREST_RO_DB_URL required}"
-: "${POSTGREST_KEY:?POSTGREST_KEY required}"
-: "${POSTGREST_EXPORT_PATH:?POSTGREST_EXPORT_PATH required}"
+# Env
+: "${POSTGREST_RO_DB_URL:?missing}"
+: "${POSTGREST_KEY:?missing}"
+: "${ROUTING_VIEW:=edge_export_routing_view}"   # returns rows: { "num": "+15144479631", "target": "f1" }
+: "${KAMCMD_BIN:=kamcmd}"
 
-DEST_MAP="/etc/kamailio/dest.map"
-MTREE_NAME="dest"
+API_URL="${POSTGREST_RO_DB_URL%/}/${ROUTING_VIEW}?select=num,target"
 
-BASE="${POSTGREST_RO_DB_URL%/}"
-URL="${BASE}${POSTGREST_EXPORT_PATH}?select=num,target"
+tmp_new="$(mktemp)"
+tmp_old="$(mktemp)"
+trap 'rm -f "$tmp_new" "$tmp_old"' EXIT
 
-tmp_json="$(mktemp)"
-tmp_out="$(mktemp)"
-
-# Fetch JSON and capture HTTP status
-status="$(curl -sS -w '%{http_code}' -o "$tmp_json" \
-  -H "Accept: application/json" \
+# 1) Fetch desired state
+http_code=$(curl -sS -o "$tmp_new" -w '%{http_code}' \
   -H "Authorization: Bearer ${POSTGREST_KEY}" \
-  "$URL")"
+  -H 'Accept: application/json' \
+  "$API_URL")
 
-if [ "$status" != "200" ]; then
-  echo "ERROR: PostgREST $URL returned HTTP $status" >&2
-  echo "Body:" >&2; sed -n '1,200p' "$tmp_json" >&2
-  rm -f "$tmp_json" "$tmp_out"
+if [[ "$http_code" != "200" ]]; then
+  echo "ERROR: PostgREST $API_URL returned HTTP $http_code" >&2
+  echo "Body:" >&2
+  cat "$tmp_new" >&2
   exit 1
 fi
 
-# Parse → "<num> <target>" lines (allow empty)
-if ! jq -er '.[] | select(.num and .target) | "\(.num) \(.target)"' < "$tmp_json" > "$tmp_out"; then
-  echo "WARN: JSON parse produced no rows; writing empty dest.map" >&2
-  : > "$tmp_out"
+# Ensure each line: num<TAB>target
+jq -r '.[] | [.num,.target] | @tsv' "$tmp_new" \
+  | awk -F'\t' 'NF==2 && $1!="" && $2!="" {print $1"\t"$2}' \
+  | sort -u > "$tmp_new.sorted"
+
+# 2) Get current state from Kamailio (what mtree has now)
+# kamcmd mtree.dump dest  -> lines like: "<prefix> => <value>"
+if ! $KAMCMD_BIN mtree.dump dest >/dev/null 2>&1; then
+  echo "ERROR: kamcmd cannot contact Kamailio (jsonrpcs). Is Kamailio running and jsonrpcs loaded?" >&2
+  exit 1
 fi
 
-# Install map atomically
-install -o root -g root -m 0644 "$tmp_out" "$DEST_MAP"
-rm -f "$tmp_json" "$tmp_out"
+$KAMCMD_BIN mtree.dump dest \
+  | awk -F'=>| ' '/=>/ {gsub(/^ +| +$/,"",$1); gsub(/^ +| +$/,"",$2); if($1!=""&&$2!="") print $1"\t"$2}' \
+  | sort -u > "$tmp_old.sorted"
 
-# Hot-reload mtree (best effort)
-KAMCTL="$(command -v kamctl || true)"
-if [ -n "$KAMCTL" ] && [ -S /var/run/kamailio/kamailio_fifo ]; then
-  "$KAMCTL" fifo "mtree.reload $MTREE_NAME" || true
-else
-  systemctl reload kamailio || systemctl restart kamailio || true
-fi
+# 3) Compute diffs
+to_add="$(mktemp)"; to_rm="$(mktemp)"
+trap 'rm -f "$tmp_new" "$tmp_old" "$to_add" "$to_rm" "$tmp_new.sorted" "$tmp_old.sorted"' EXIT
+
+comm -13 "$tmp_old.sorted" "$tmp_new.sorted" > "$to_add"  # in NEW, not in OLD
+comm -23 "$tmp_old.sorted" "$tmp_new.sorted" > "$to_rm"   # in OLD, not in NEW
+
+# 4) Remove stale entries (by prefix; removes any value for that prefix)
+while IFS=$'\t' read -r num target; do
+  [[ -z "$num" ]] && continue
+  echo "RM: $num"
+  $KAMCMD_BIN mtree.rm dest "$num" >/dev/null || true
+done < "$to_rm"
+
+# 5) Add missing entries
+while IFS=$'\t' read -r num target; do
+  [[ -z "$num" || -z "$target" ]] && continue
+  echo "ADD: $num -> $target"
+  # best-effort remove first to avoid duplicate errors
+  $KAMCMD_BIN mtree.rm dest "$num" >/dev/null || true
+  $KAMCMD_BIN mtree.add dest "$num" "$target" >/dev/null
+done < "$to_add"
+
+echo "OK: mtree 'dest' synced."
