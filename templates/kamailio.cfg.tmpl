@@ -7,14 +7,13 @@ children=8
 mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
 
 # Listen / Advertise
-listen=udp:__LISTEN_ADDR__:__LISTEN_PORT__
-__ADVERTISE_LINE__
+listen=udp:__LISTEN_ADDR__:__LISTEN_PORT____ADVERTISE_SUFFIX__
 
 #### Modules ####
-# Core routing helpers
-loadmodule "sl.so"
+# Core routing helpers (tm first)
 loadmodule "tm.so"
 loadmodule "tmx.so"
+loadmodule "sl.so"
 loadmodule "rr.so"
 loadmodule "sanity.so"
 loadmodule "maxfwd.so"
@@ -26,13 +25,21 @@ loadmodule "xlog.so"
 # Carrier IP/CIDR checks
 loadmodule "ipops.so"
 
+# DBTEXT driver so mtree can initialize a DB backend (we won't actually read from it)
+loadmodule "db_text.so"
+
 # JSON-RPC server so `kamcmd` can manage mtree (FIFO transport)
 loadmodule "jsonrpcs.so"
 modparam("jsonrpcs", "fifo_name", "/run/kamailio/kamailio_rpc.fifo")
 
-# Longest-prefix map kept in memory; populated via `kamcmd mtree.add`
+# In-memory longest-prefix map; we push entries with `kamcmd mtree.add`
 loadmodule "mtree.so"
+# point to a harmless db_text URL so mtree can bind a DB driver
+modparam("mtree", "db_url", "text:///var/lib/kamailio/dbtext")
+# define an in-memory tree named "dest"
 modparam("mtree", "mtree", "name=dest")
+# where to store the matched value from mt_match()
+modparam("mtree", "pv_value", "$avp(mtv)")
 
 #### Routing ####
 request_route {
@@ -43,7 +50,7 @@ request_route {
     if (is_method("OPTIONS") && uri==myself) { sl_send_reply("200","OK"); exit; }
 
     if (is_method("INVITE")) {
-        # Carrier allowlist (rendered from .env at install)
+        # Carrier allowlist (rendered from .env)
         if (!( __CARRIER_EXPR__ )) {
             xlog("L_WARN","Blocked INVITE from $si\n");
             sl_send_reply("403","Forbidden");
@@ -53,22 +60,21 @@ request_route {
         if ($rU == $null || $rU == "") { sl_send_reply("484","Address Incomplete"); exit; }
 
         # Expect E.164; keep '+' and digits only
-        $var(dst) = $(rU{s.gsub,([^+0-9]),,g});
+        $var(dst) = $(rU{re.subst,/[^+0-9]//g});
 
-        # Lookup → "f1" | "f2" from mtree 'dest'
-        $var(target) = mt_match("dest", "$var(dst)");
-        if ($var(target) == $null || $var(target) == "") {
+        # Longest-prefix match in mtree "dest"; matched value lands in $avp(mtv) ("f1"|"f2")
+        if (!mt_match("dest", $var(dst), 0)) {
             xlog("L_NOTICE","No mtree match for $var(dst)\n");
             sl_send_reply("404","No route");
             exit;
         }
 
-        if ($var(target) == "f1") {
+        if ($avp(mtv) == "f1") {
             $du = "sip:__F1_HOST__:5060;transport=udp";
-        } else if ($var(target) == "f2") {
+        } else if ($avp(mtv) == "f2") {
             $du = "sip:__F2_HOST__:5060;transport=udp";
         } else {
-            xlog("L_ERR","Unknown mtree target '$var(target)'\n");
+            xlog("L_ERR","Unknown mtree target '$avp(mtv)'\n");
             sl_send_reply("500","Server Misconfig");
             exit;
         }

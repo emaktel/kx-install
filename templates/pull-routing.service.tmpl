@@ -1,5 +1,7 @@
 [Unit]
 Description=Export SIP routing from PostgREST view to Kamailio mtree
+After=network-online.target kamailio.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot

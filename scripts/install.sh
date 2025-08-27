@@ -4,11 +4,8 @@ set -euo pipefail
 die(){ echo "ERROR: $*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "Missing dependency: $1"; }
 
-# escape values for use in sed replacement with '#' delimiter
-sed_escape() {
-  # escape: backslash, ampersand, slash, and our delimiter '#'
-  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g' -e 's/#/\\#/g' -e 's/\\/\\\\/g'
-}
+# escape for sed with '#' delimiter
+sed_escape() { printf '%s' "$1" | sed -e 's/[\/&]/\\&/g' -e 's/#/\\#/g' -e 's/\\/\\\\/g'; }
 
 [ "$EUID" -eq 0 ] || die "Run as root (sudo)."
 
@@ -35,6 +32,15 @@ apt-get install -y kamailio kamailio-extra-modules curl jq
 
 need sed; need awk; need tr; need jq; need curl
 
+echo "==> Prepare dbtext directory (for mtree init)"
+DBTXT_DIR="/var/lib/kamailio/dbtext"
+install -d -o kamailio -g kamailio "$DBTXT_DIR"
+# Minimal db_text 'version' table so URL is valid even if unused
+if [ ! -f "$DBTXT_DIR/version" ]; then
+  printf 'table_name(str) table_version(int)\n' > "$DBTXT_DIR/version"
+  chown kamailio:kamailio "$DBTXT_DIR/version"
+fi
+
 echo "==> Backup existing Kamailio config (if any)"
 if [ -f /etc/kamailio/kamailio.cfg ] && [ ! -f /etc/kamailio/kamailio.cfg.bak ]; then
   cp -a /etc/kamailio/kamailio.cfg /etc/kamailio/kamailio.cfg.bak || true
@@ -44,7 +50,7 @@ echo "==> Render kamailio.cfg"
 CFG_TMPL="$ROOT_DIR/templates/kamailio.cfg.tmpl"
 CFG_OUT="/etc/kamailio/kamailio.cfg"
 
-# Build carrier allow expression ($si is already escaped with backslashes below)
+# Build carrier allow expression
 CARRIER_EXPR=""
 IFS=',' read -ra SRC_ARR <<< "$CARRIER_SOURCES"
 for raw in "${SRC_ARR[@]}"; do
@@ -59,17 +65,17 @@ for raw in "${SRC_ARR[@]}"; do
 done
 [ -n "$CARRIER_EXPR" ] || die "CARRIER_SOURCES produced empty expression"
 
-# Only inject an advertise line if provided; otherwise inject BLANK (no '# ...' comment!)
+# Advertise suffix for listen line
 if [ -n "$ADVERTISE_ADDR" ]; then
-  ADVERTISE_LINE="advertise \"$ADVERTISE_ADDR\":$LISTEN_PORT"
+  ADVERTISE_SUFFIX=" advertise ${ADVERTISE_ADDR}:${LISTEN_PORT}"
 else
-  ADVERTISE_LINE=""
+  ADVERTISE_SUFFIX=""
 fi
 
-# Escape everything for sed replacement
+# Escape for sed
 ESC_LISTEN_ADDR="$(sed_escape "$LISTEN_ADDR")"
 ESC_LISTEN_PORT="$(sed_escape "$LISTEN_PORT")"
-ESC_ADVERTISE_LINE="$(sed_escape "$ADVERTISE_LINE")"
+ESC_ADVERTISE_SUFFIX="$(sed_escape "$ADVERTISE_SUFFIX")"
 ESC_CARRIER_EXPR="$(sed_escape "$CARRIER_EXPR")"
 ESC_F1_HOST="$(sed_escape "$F1_HOST")"
 ESC_F2_HOST="$(sed_escape "$F2_HOST")"
@@ -77,7 +83,7 @@ ESC_F2_HOST="$(sed_escape "$F2_HOST")"
 tmpcfg="$(mktemp)"
 sed -e "s#__LISTEN_ADDR__#${ESC_LISTEN_ADDR}#g" \
     -e "s#__LISTEN_PORT__#${ESC_LISTEN_PORT}#g" \
-    -e "s#__ADVERTISE_LINE__#${ESC_ADVERTISE_LINE}#g" \
+    -e "s#__ADVERTISE_SUFFIX__#${ESC_ADVERTISE_SUFFIX}#g" \
     -e "s#__CARRIER_EXPR__#${ESC_CARRIER_EXPR}#g" \
     -e "s#__F1_HOST__#${ESC_F1_HOST}#g" \
     -e "s#__F2_HOST__#${ESC_F2_HOST}#g" \
@@ -85,40 +91,40 @@ sed -e "s#__LISTEN_ADDR__#${ESC_LISTEN_ADDR}#g" \
 install -o root -g root -m 0644 "$tmpcfg" "$CFG_OUT"
 rm -f "$tmpcfg"
 
-echo "==> Create empty mtree map"
-install -o root -g root -m 0644 /dev/null /etc/kamailio/dest.map
-
 echo "==> Install routing exporter"
 install -D -o root -g root -m 0755 "$ROOT_DIR/bin/pull-routing.sh" /usr/local/sbin/pull-routing.sh
 
 echo "==> Install systemd unit & timer"
+SVC_TMPL="$ROOT_DIR/templates/pull-routing.service.tmpl"
+TMR_TMPL="$ROOT_DIR/templates/pull-routing.timer.tmpl"
 SVC_OUT="/etc/systemd/system/pull-routing.service"
 TMR_OUT="/etc/systemd/system/pull-routing.timer"
 
 svc_tmp="$(mktemp)"
 tmr_tmp="$(mktemp)"
 
+# escape slashes for sed here
 sed -e "s#__POSTGREST_RO_DB_URL__#${POSTGREST_RO_DB_URL//\//\\/}#g" \
     -e "s#__POSTGREST_KEY__#${POSTGREST_KEY//\//\\/}#g" \
     -e "s#__POSTGREST_EXPORT_PATH__#${POSTGREST_EXPORT_PATH//\//\\/}#g" \
-    "$ROOT_DIR/templates/pull-routing.service.tmpl" > "$svc_tmp"
+    "$SVC_TMPL" > "$svc_tmp"
 
-sed -e "s#__PULL_INTERVAL__#$PULL_INTERVAL#g" \
-    "$ROOT_DIR/templates/pull-routing.timer.tmpl" > "$tmr_tmp"
+sed -e "s#__PULL_INTERVAL__#${PULL_INTERVAL}#g" \
+    "$TMR_TMPL" > "$tmr_tmp"
 
 install -o root -g root -m 0644 "$svc_tmp" "$SVC_OUT"
 install -o root -g root -m 0644 "$tmr_tmp" "$TMR_OUT"
 rm -f "$svc_tmp" "$tmr_tmp"
 
+echo "==> Reload systemd, enable services"
 systemctl daemon-reload
-systemctl enable --now pull-routing.timer
-systemctl start pull-routing.service || true
-
-echo "==> Enable & start Kamailio"
 systemctl enable --now kamailio
+systemctl enable --now pull-routing.timer
+# run a first sync; if Kamailio not fully up yet, it's fine to retry later via timer
+systemctl start pull-routing.service || true
 
 echo "==> Done."
 echo "Logs:"
 echo "  journalctl -u kamailio -e -n 100"
 echo "  journalctl -u pull-routing.service -e -n 50"
-echo "Check map: head /etc/kamailio/dest.map"
+echo "Check tree: kamcmd mtree.dump dest | head"

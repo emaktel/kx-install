@@ -1,11 +1,9 @@
 [Unit]
-Description=Run SIP routing export periodically
+Description=Refresh SIP routing from PostgREST view into Kamailio mtree
 
 [Timer]
 OnBootSec=30s
 OnUnitActiveSec=__PULL_INTERVAL__
-RandomizedDelaySec=20s
-Persistent=true
 
 [Install]
 WantedBy=timers.target
