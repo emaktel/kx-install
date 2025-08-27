@@ -35,7 +35,7 @@ SELECT DISTINCT
      regexp_replace(vd.destination_prefix, '\D', '', 'g') ||
      regexp_replace(vd.destination_number,  '\D', '', 'g')
   )::text                         AS num,
-  vdms.server_affinity::text      AS target
+  vd.server_affinity::text      AS target
 FROM public.v_destinations vd
 JOIN public.v_domains vdms
   ON vd.domain_uuid = vdms.domain_uuid
@@ -44,7 +44,7 @@ WHERE vdms.domain_enabled IS TRUE
   AND vd.destination_type = 'inbound'
   AND vd.destination_prefix IS NOT NULL AND vd.destination_prefix <> ''
   AND vd.destination_number  IS NOT NULL AND vd.destination_number  <> ''
-  AND vdms.server_affinity IN ('f1','f2')
+  AND vd.server_affinity IN ('f1','f2')
 ORDER BY num;
 ```
 
