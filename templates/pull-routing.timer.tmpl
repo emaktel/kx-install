@@ -1,9 +1,11 @@
 [Unit]
-Description=Refresh SIP routing from PostgREST view into Kamailio mtree
+Description=Periodic PostgREST → Kamailio mtree sync
 
 [Timer]
 OnBootSec=30s
-OnUnitActiveSec=__PULL_INTERVAL__
+OnUnitActiveSec={{PULL_MINUTES}}min
+AccuracySec=10s
+Unit=pull-routing.service
 
 [Install]
 WantedBy=timers.target

@@ -7,10 +7,13 @@ children=8
 mpath="/usr/lib/x86_64-linux-gnu/kamailio/modules/"
 
 # Listen / Advertise
-listen=udp:__LISTEN_ADDR__:__LISTEN_PORT____ADVERTISE_SUFFIX__
+listen=udp:{{SIP_LISTEN_ADDR}}:{{SIP_LISTEN_PORT}}
+#!ifdef ADVERTISE_SET
+advertise=udp:{{SIP_ADVERTISE_ADDR}}:{{SIP_LISTEN_PORT}}
+#!endif
 
 #### Modules ####
-# Core routing helpers (tm first)
+# Transaction engine MUST be before sl
 loadmodule "tm.so"
 loadmodule "tmx.so"
 loadmodule "sl.so"
@@ -21,24 +24,16 @@ loadmodule "pv.so"
 loadmodule "textops.so"
 loadmodule "siputils.so"
 loadmodule "xlog.so"
-
-# Carrier IP/CIDR checks
 loadmodule "ipops.so"
 
-# DBTEXT driver so mtree can initialize a DB backend (we won't actually read from it)
-loadmodule "db_text.so"
-
-# JSON-RPC server so `kamcmd` can manage mtree (FIFO transport)
+# kamcmd over FIFO
 loadmodule "jsonrpcs.so"
 modparam("jsonrpcs", "fifo_name", "/run/kamailio/kamailio_rpc.fifo")
 
-# In-memory longest-prefix map; we push entries with `kamcmd mtree.add`
+# Longest-prefix map in memory only (populated by pull-routing.sh via kamcmd)
 loadmodule "mtree.so"
-# point to a harmless db_text URL so mtree can bind a DB driver
-modparam("mtree", "db_url", "text:///var/lib/kamailio/dbtext")
-# define an in-memory tree named "dest"
+# Define tree named 'dest' and store matched value in $avp(mtv)
 modparam("mtree", "mtree", "name=dest")
-# where to store the matched value from mt_match()
 modparam("mtree", "pv_value", "$avp(mtv)")
 
 #### Routing ####
@@ -46,12 +41,12 @@ request_route {
     if (!sanity_check("1777","7")) exit;
     if (!mf_process_maxfwd_header("10")) { sl_send_reply("483","Too Many Hops"); exit; }
 
-    # Liveness
+    # Keepalive
     if (is_method("OPTIONS") && uri==myself) { sl_send_reply("200","OK"); exit; }
 
     if (is_method("INVITE")) {
-        # Carrier allowlist (rendered from .env)
-        if (!( __CARRIER_EXPR__ )) {
+        # Carrier allow-list
+        if (!( {{CARRIER_EXPR}} )) {
             xlog("L_WARN","Blocked INVITE from $si\n");
             sl_send_reply("403","Forbidden");
             exit;
@@ -62,7 +57,7 @@ request_route {
         # Expect E.164; keep '+' and digits only
         $var(dst) = $(rU{re.subst,/[^+0-9]//g});
 
-        # Longest-prefix match in mtree "dest"; matched value lands in $avp(mtv) ("f1"|"f2")
+        # LPM lookup on 'dest' => $avp(mtv) = "f1" or "f2"
         if (!mt_match("dest", $var(dst), 0)) {
             xlog("L_NOTICE","No mtree match for $var(dst)\n");
             sl_send_reply("404","No route");
@@ -70,9 +65,9 @@ request_route {
         }
 
         if ($avp(mtv) == "f1") {
-            $du = "sip:__F1_HOST__:5060;transport=udp";
+            $du = "{{F1_SIP}}";
         } else if ($avp(mtv) == "f2") {
-            $du = "sip:__F2_HOST__:5060;transport=udp";
+            $du = "{{F2_SIP}}";
         } else {
             xlog("L_ERR","Unknown mtree target '$avp(mtv)'\n");
             sl_send_reply("500","Server Misconfig");

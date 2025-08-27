@@ -1,65 +1,103 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${POSTGREST_RO_DB_URL:?POSTGREST_RO_DB_URL required}"
-: "${POSTGREST_KEY:?POSTGREST_KEY required}"
-: "${POSTGREST_EXPORT_PATH:?POSTGREST_EXPORT_PATH required}"
-: "${KAMCMD_BIN:=kamcmd}"
+# Load env (if run by systemd unit, EnvironmentFile loads it)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$REPO_DIR/.env" ]; then
+  # shellcheck disable=SC1090
+  . "$REPO_DIR/.env"
+fi
 
-BASE="${POSTGREST_RO_DB_URL%/}"
-PATH_SEG="${POSTGREST_EXPORT_PATH#/}"       # strip leading slash if present
-URL="${BASE}/${PATH_SEG}?select=num,target"
+: "${POSTGREST_KEY:?POSTGREST_KEY missing}"
+: "${POSTGREST_RO_DB_URL:?POSTGREST_RO_DB_URL missing}"
+: "${POSTGREST_VIEW:?POSTGREST_VIEW missing}"
+DEST_MAP_PATH="${DEST_MAP_PATH:-/etc/kamailio/dest.map}"
 
-tmp_json="$(mktemp)"
-tmp_new="$(mktemp)"
-tmp_old="$(mktemp)"
-trap 'rm -f "$tmp_json" "$tmp_new" "$tmp_old" "$tmp_new.sorted" "$tmp_old.sorted" "$to_add" "$to_rm"' EXIT
+API_URL="${POSTGREST_RO_DB_URL%/}/$POSTGREST_VIEW?select=num,target"
 
-# 1) fetch desired state
-status="$(curl -sS -w '%{http_code}' -o "$tmp_json" \
-  -H "Accept: application/json" \
-  -H "Authorization: Bearer ${POSTGREST_KEY}" \
-  "$URL")"
-if [ "$status" != "200" ]; then
-  echo "ERROR: PostgREST $URL returned HTTP $status" >&2
-  sed -n '1,200p' "$tmp_json" >&2
+tmpjson="$(mktemp)"
+trap 'rm -f "$tmpjson"' EXIT
+
+# 1) Pull JSON
+http_code=$(
+  curl -sS -w '%{http_code}' -o "$tmpjson" \
+    -H "Authorization: Bearer ${POSTGREST_KEY}" \
+    -H "Accept: application/json" \
+    "$API_URL"
+)
+
+if [ "$http_code" != "200" ]; then
+  echo "ERROR: PostgREST ${API_URL} returned HTTP ${http_code}" >&2
+  echo "Body:" >&2
+  cat "$tmpjson" >&2 || true
   exit 1
 fi
 
-# JSON -> TSV (num \t target), unique/sorted; allow empty
-if ! jq -er '.[] | select(.num and .target) | "\(.num)\t\(.target)"' < "$tmp_json" \
-    | sort -u > "$tmp_new.sorted"; then
-  : > "$tmp_new.sorted"
-fi
-
-# 2) current in-memory state
-if ! $KAMCMD_BIN mtree.dump dest >/dev/null 2>&1; then
-  echo "ERROR: kamcmd cannot contact Kamailio (jsonrpcs). Is Kamailio running?" >&2
+# 2) Validate & render to map file
+# Expected rows: [{"num":"+15145551212","target":"f1"}, ...]
+if ! jq -e 'type=="array"' < "$tmpjson" >/dev/null 2>&1; then
+  echo "ERROR: Unexpected JSON (not an array)" >&2
+  cat "$tmpjson" >&2
   exit 1
 fi
 
-$KAMCMD_BIN mtree.dump dest \
-  | awk -F'=>| ' '/=>/ {gsub(/^ +| +$/,"",$1); gsub(/^ +| +$/,"",$2); if($1!=""&&$2!="") print $1"\t"$2}' \
-  | sort -u > "$tmp_old.sorted"
+# Write pretty map (for humans)
+sudo install -o "${KAM_USER:-kamailio}" -g "${KAM_GROUP:-kamailio}" -m 0644 /dev/null "$DEST_MAP_PATH"
+jq -r '.[] | "\(.num) \(.target)"' < "$tmpjson" | sudo tee "$DEST_MAP_PATH" >/dev/null
 
-# 3) diffs
-to_add="$(mktemp)"; to_rm="$(mktemp)"
-comm -13 "$tmp_old.sorted" "$tmp_new.sorted" > "$to_add"  # in NEW, not in OLD
-comm -23 "$tmp_old.sorted" "$tmp_new.sorted" > "$to_rm"   # in OLD, not in NEW
+# 3) Push into Kamailio mtree (best-effort; skip if Kamailio is down)
+if ! command -v kamcmd >/dev/null 2>&1; then
+  echo "WARN: kamcmd not found; skipping mtree update" >&2
+  exit 0
+fi
 
-# 4) apply removals (by prefix)
-while IFS=$'\t' read -r num _; do
-  [ -n "${num:-}" ] || continue
-  echo "RM: $num"
-  $KAMCMD_BIN mtree.rm dest "$num" >/dev/null || true
-done < "$to_rm"
+# Optional: detect if Kamailio is reachable
+if ! kamcmd core.ps >/dev/null 2>&1; then
+  echo "WARN: kamcmd cannot contact Kamailio (jsonrpcs). Is Kamailio running?" >&2
+  exit 1
+fi
 
-# 5) apply adds
-while IFS=$'\t' read -r num target; do
-  [ -n "${num:-}" ] && [ -n "${target:-}" ] || continue
-  echo "ADD: $num -> $target"
-  $KAMCMD_BIN mtree.rm dest "$num" >/dev/null || true
-  $KAMCMD_BIN mtree.add dest "$num" "$target" >/dev/null
-done < "$to_add"
+# 3a) Build a set of current prefixes (if any) to allow deletion of stale routes.
+# Use JSON output if available; else fall back to text parsing.
+have_json=1
+dump_json="$(mktemp)"; trap 'rm -f "$dump_json"' RETURN
+if ! kamcmd -j mtree.dump dest > "$dump_json" 2>/dev/null; then
+  have_json=0
+fi
 
-echo "OK: mtree 'dest' synced."
+declare -A new_set=()
+while read -r num target; do
+  [ -z "$num" ] && continue
+  new_set["$num"]="$target"
+done < <(jq -r '.[] | "\(.num) \(.target)"' < "$tmpjson")
+
+# Current entries
+declare -A cur_set=()
+if [ "$have_json" -eq 1 ]; then
+  jq -r '.records[]? | "\(.tprefix)"' < "$dump_json" | while read -r p; do
+    [ -z "$p" ] && continue
+    cur_set["$p"]=1
+  done
+else
+  # very crude text fallback (lines containing "tprefix: <value>")
+  kamcmd mtree.dump dest 2>/dev/null | sed -n 's/.*tprefix:[[:space:]]*\([^ ]*\).*/\1/p' | while read -r p; do
+    [ -z "$p" ] && continue
+    cur_set["$p"]=1
+  done
+fi
+
+# 3b) Remove stale prefixes
+for p in "${!cur_set[@]}"; do
+  if [ -z "${new_set["$p"]+x}" ]; then
+    kamcmd mtree.rm dest "$p" >/dev/null 2>&1 || true
+  fi
+done
+
+# 3c) Add/overwrite all new entries
+while read -r num target; do
+  [ -z "$num" ] && continue
+  kamcmd mtree.add dest "$num" "$target" >/dev/null
+done < <(jq -r '.[] | "\(.num) \(.target)"' < "$tmpjson")
+
+echo "OK: mtree dest updated with $(printf '%s\n' "${!new_set[@]}" | wc -l) routes"
+exit 0
