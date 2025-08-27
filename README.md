@@ -11,7 +11,7 @@
 sudo apt update && sudo apt install git -y && cd ~ && git clone https://github.com/emaktel/kx-install.git kamailio-edge
 cp .env.example .env
 # edit .env (F1_HOST/F2_HOST, CARRIER_SOURCES, POSTGREST_* values)
-sudo ./scripts/install.sh
+chmod +x scripts/install.sh && ./scripts/install.sh
 ```
 
 ## Logs
@@ -28,7 +28,7 @@ head /etc/kamailio/dest.map
 
 Default expects a **VIEW** as follows:
 
-```
+```sql
 CREATE OR REPLACE VIEW public.edge_export_routing_view AS
 SELECT DISTINCT
   ('+' ||
@@ -50,7 +50,7 @@ ORDER BY num;
 
 Returning:
 
-```
+```json
 [
     {
     "num": "<E164 or normalized>",
@@ -58,7 +58,7 @@ Returning:
     ...
     }
 ]
-'''
+```
 
 ## Change routing
 
