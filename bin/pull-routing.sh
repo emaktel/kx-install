@@ -11,27 +11,36 @@ MTREE_NAME="dest"
 BASE="${POSTGREST_RO_DB_URL%/}"
 URL="${BASE}${POSTGREST_EXPORT_PATH}?select=num,target"
 
-tmp="$(mktemp)"
+tmp_json="$(mktemp)"
+tmp_out="$(mktemp)"
 
-# GET the view; expect JSON array with {num:"+E164", target:"f1|f2"}
-curl -sS -X GET "$URL" \
+# Fetch JSON and capture HTTP status
+status="$(curl -sS -w '%{http_code}' -o "$tmp_json" \
   -H "Accept: application/json" \
   -H "Authorization: Bearer ${POSTGREST_KEY}" \
-| jq -r '.[] | select(.num and .target) | "\(.num) \(.target)"' > "$tmp"
+  "$URL")"
 
-# Sanity: must output lines ending with f1/f2
-if ! grep -Eq ' (f1|f2)$' "$tmp"; then
-  echo "ERROR: export produced no f1/f2 rows from $URL" >&2
-  rm -f "$tmp"
+if [ "$status" != "200" ]; then
+  echo "ERROR: PostgREST $URL returned HTTP $status" >&2
+  echo "Body:" >&2; sed -n '1,200p' "$tmp_json" >&2
+  rm -f "$tmp_json" "$tmp_out"
   exit 1
 fi
 
-install -o root -g root -m 0644 "$tmp" "$DEST_MAP"
-rm -f "$tmp"
+# Parse → "<num> <target>" lines (allow empty)
+if ! jq -er '.[] | select(.num and .target) | "\(.num) \(.target)"' < "$tmp_json" > "$tmp_out"; then
+  echo "WARN: JSON parse produced no rows; writing empty dest.map" >&2
+  : > "$tmp_out"
+fi
 
-# Hot-reload mtree: prefer kamctl FIFO (mi_fifo loaded)
-if command -v kamctl >/dev/null 2>&1; then
-  kamctl fifo "mtree.reload $MTREE_NAME" || true
+# Install map atomically
+install -o root -g root -m 0644 "$tmp_out" "$DEST_MAP"
+rm -f "$tmp_json" "$tmp_out"
+
+# Hot-reload mtree (best effort)
+KAMCTL="$(command -v kamctl || true)"
+if [ -n "$KAMCTL" ] && [ -S /var/run/kamailio/kamailio_fifo ]; then
+  "$KAMCTL" fifo "mtree.reload $MTREE_NAME" || true
 else
-  systemctl restart kamailio || true
+  systemctl reload kamailio || systemctl restart kamailio || true
 fi

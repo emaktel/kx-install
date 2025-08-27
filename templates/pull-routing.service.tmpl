@@ -3,6 +3,7 @@ Description=Export SIP routing from PostgREST view to Kamailio mtree
 
 [Service]
 Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=POSTGREST_RO_DB_URL=__POSTGREST_RO_DB_URL__
 Environment=POSTGREST_KEY=__POSTGREST_KEY__
 Environment=POSTGREST_EXPORT_PATH=__POSTGREST_EXPORT_PATH__
